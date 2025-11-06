@@ -1,0 +1,55 @@
+body { 
+    font-family: 'Kantumruy Pro', sans-serif; 
+    -webkit-tap-highlight-color: transparent; 
+}
+.dropdown-list { 
+    scrollbar-width: thin; 
+    scrollbar-color: #9ca3af #f3f4f6; 
+}
+.dropdown-list::-webkit-scrollbar { 
+    width: 6px; 
+}
+.dropdown-list::-webkit-scrollbar-track { 
+    background: #f3f4f6; 
+    border-radius: 10px; 
+}
+.dropdown-list::-webkit-scrollbar-thumb { 
+    background-color: #9ca3af; 
+    border-radius: 10px; 
+    border: 2px solid #f3f4f6; 
+}
+.spinner { 
+    border: 4px solid rgba(0, 0, 0, 0.1); 
+    width: 36px; 
+    height: 36px; 
+    border-radius: 50%; 
+    border-left-color: #09f; 
+    animation: spin 1s ease infinite; 
+}
+@keyframes spin { 
+    0% { transform: rotate(0deg); } 
+    100% { transform: rotate(360deg); } 
+}
+#page-request-leave, #page-request-out { 
+    min-height: 100vh; 
+}
+.history-tab.active { 
+    border-bottom-width: 3px; 
+    border-color: #2563eb; 
+    color: #2563eb; 
+}
+.history-tab { 
+    border-bottom-width: 3px; 
+    border-color: transparent; 
+}
+/* Styles for Attendance Iframe Page */
+#attendance-iframe-container {
+    /* 100vh (កម្ពស់​ពេញ) ដក 64px (កម្ពស់ header) */
+    height: calc(100vh - 64px); 
+    width: 100%;
+}
+#attendance-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+}
