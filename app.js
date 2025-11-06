@@ -22,7 +22,11 @@ let selectedOutReason = null;
 // --- START: New Face Analysis State ---
 let isFaceAnalysisRunning = false;
 let lastFaceCheck = 0;
-const FACE_CHECK_INTERVAL = 300; // ពិនិត្យរៀងរាល់ 300ms (លឿនជាង 500ms)
+// ========== START: MODIFICATION (Smoothness) ==========
+// ប្រើ 500ms ព្រោះ SsdMobilenetv1 ធ្ងន់ជាង TinyDetector
+// នេះជួយឲ្យកម្មវិធីរលូន (smooth) មិនគាំង (lag)
+const FACE_CHECK_INTERVAL = 500; 
+// ========== END: MODIFICATION (Smoothness) ==========
 // --- END: New Face Analysis State ---
 
 // المتغيرات​ថ្មី​សម្រាប់​ទំព័រ​វត្តមាន
@@ -50,7 +54,7 @@ function formatFirestoreTimestamp(timestamp, format = 'HH:mm dd/MM/yyyy') { let 
 function parseReturnedAt_(returnedAtString) { if (!returnedAtString || typeof returnedAtString !== 'string') return { date: "", time: "" }; const parts = returnedAtString.split(' '); if (parts.length === 2) return { time: parts[0], date: parts[1] }; return { date: returnedAtString, time: "" }; }
 function formatDateToDdMmmYyyy(dateString) {
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let date;
+  <b></b> let date;
     if (dateString.includes('/') && dateString.split('/').length === 3) { // dd/mm/yyyy
         const parts = dateString.split('/');
         date = new Date(parts[2], parts[1] - 1, parts[0]); // year, month (0-indexed), day
@@ -139,8 +143,69 @@ document.addEventListener('DOMContentLoaded', async () => {
     function populateUserDropdown(users, inputId, dropdownId, onSelectCallback) { const userItems = users.filter(user => user.id && user.name).map(user => ({ text: `${user.id} - ${user.name}`, value: user.id })); setupSearchableDropdown(inputId, dropdownId, userItems, onSelectCallback, false); }
 
     // --- Face Scan Logic ---
-    async function loadFaceApiModels() { if (!modelStatusEl) return; try { console.log("Loading face-api models..."); modelStatusEl.textContent = 'កំពុងទាញយក Model ស្កេនមុខ...'; await Promise.all([ faceapi.nets.tinyFaceDetector.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights'), faceapi.nets.faceLandmark68TinyNet.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights'), faceapi.nets.faceRecognitionNet.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights'), ]); modelStatusEl.textContent = 'Model ស្កេនមុខបានទាញយករួចរាល់'; console.log("Face-api models loaded successfully."); if (scanFaceBtn) scanFaceBtn.disabled = (selectedUserId === null); } catch (error) { console.error("Error ពេលទាញយក Model របស់ face-api:", error); modelStatusEl.textContent = 'Error: មិនអាចទាញយក Model បាន'; } }
-    async function getReferenceDescriptor(userPhotoUrl) { if (userReferenceDescriptor) { console.log("Using cached reference descriptor."); return userReferenceDescriptor; } if (!userPhotoUrl) throw new Error("Missing user photo URL"); console.log("Fetching and computing new reference descriptor..."); let referenceImage; try { const img = new Image(); img.crossOrigin = 'anonymous'; img.src = userPhotoUrl; await new Promise((resolve, reject) => { img.onload = () => resolve(); img.onerror = (err) => reject(new Error('Failed to fetch (មិនអាចទាញយករូបថតយោងបាន)។ សូមប្រាកដថា Link រូបថតត្រឹមត្រូវ។')); }); referenceImage = img; } catch (fetchError) { throw fetchError; } let referenceDetection; try { const options = new faceapi.TinyFaceDetectorOptions(); referenceDetection = await faceapi.detectSingleFace(referenceImage, options).withFaceLandmarks(true).withFaceDescriptor(); if (!referenceDetection) throw new Error('រកមិនឃើញមុខនៅក្នុងរូបថតយោង'); } catch (descriptorError) { console.error("Descriptor Error:", descriptorError); throw new Error('មិនអាចវិភាគមុខពីរូបថតយោងបានទេ (រូបថតអាចមិនច្បាស់)។'); } userReferenceDescriptor = referenceDetection.descriptor; return userReferenceDescriptor; }
+
+    // ========== START: MODIFICATION (Smarter Model) ==========
+    async function loadFaceApiModels() { 
+        if (!modelStatusEl) return; 
+        try { 
+            console.log("Loading face-api models (SsdMobilenetv1)..."); 
+            modelStatusEl.textContent = 'កំពុងទាញយក Model ស្កេនមុខ...'; 
+            await Promise.all([ 
+                // --- ប្តូរទៅប្រើ Model ឆ្លាតជាងមុន ---
+                faceapi.nets.ssdMobilenetv1.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights'),
+                // --- Model ទាំងពីរនេះ នៅដដែល ---
+                faceapi.nets.faceLandmark68TinyNet.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights'), 
+                faceapi.nets.faceRecognitionNet.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights'), 
+            ]); 
+            modelStatusEl.textContent = 'Model ស្កេនមុខបានទាញយករួចរាល់'; 
+            console.log("Face-api models loaded successfully (SsdMobilenetv1)."); 
+            if (scanFaceBtn) scanFaceBtn.disabled = (selectedUserId === null); 
+        } catch (error) { 
+            console.error("Error ពេលទាញយក Model របស់ face-api:", error); 
+            modelStatusEl.textContent = 'Error: មិនអាចទាញយក Model បាន'; 
+        } 
+    }
+    // ========== END: MODIFICATION (Smarter Model) ==========
+
+    // ========== START: MODIFICATION (Better Master Key) ==========
+    async function getReferenceDescriptor(userPhotoUrl) { 
+        if (userReferenceDescriptor) { 
+            console.log("Using cached reference descriptor."); 
+            return userReferenceDescriptor; 
+        } 
+        if (!userPhotoUrl) throw new Error("Missing user photo URL"); 
+        console.log("Fetching and computing new reference descriptor (SsdMobilenetv1)..."); 
+        let referenceImage; 
+        try { 
+            const img = new Image(); 
+            img.crossOrigin = 'anonymous'; 
+            img.src = userPhotoUrl; 
+            await new Promise((resolve, reject) => { 
+                img.onload = () => resolve(); 
+                img.onerror = (err) => reject(new Error('Failed to fetch (មិនអាចទាញយករូបថតយោងបាន)។ សូមប្រាកដថា Link រូបថតត្រឹមត្រូវ។')); 
+            }); 
+            referenceImage = img; 
+        } catch (fetchError) { 
+            throw fetchError; 
+        } 
+        
+        let referenceDetection; 
+        try { 
+            // --- ប្តូរទៅប្រើ Model ឆ្លាតជាងមុន ដើម្បីបង្កើត "កូនសោគោល" ---
+            const options = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
+            referenceDetection = await faceapi.detectSingleFace(referenceImage, options)
+                                        .withFaceLandmarks(true)
+                                        .withFaceDescriptor(); 
+            if (!referenceDetection) throw new Error('រកមិនឃើញមុខនៅក្នុងរូបថតយោង'); 
+        } catch (descriptorError) { 
+            console.error("Descriptor Error:", descriptorError); 
+            throw new Error('មិនអាចវិភាគមុខពីរូបថតយោងបានទេ (រូបថតអាចមិនច្បាស់)។'); 
+        } 
+        userReferenceDescriptor = referenceDetection.descriptor; 
+        return userReferenceDescriptor; 
+    }
+    // ========== END: MODIFICATION (Better Master Key) ==========
+
 
 // ========== START: NEW ADVANCED FACE ANALYSIS (rAF) ==========
 
@@ -185,7 +250,7 @@ function startAdvancedFaceAnalysis(videoElement, statusElement, debugElement, re
         if (!isFaceAnalysisRunning) return; // បញ្ឈប់ Loop
 
         // --- Throttling Logic (ធ្វើឲ្យលឿន តែមិនគាំង) ---
-        // ពិនិត្យថា តើដល់ពេលត្រូវវិភាគឬនៅ (រៀងរាល់ 300ms)
+        // ពិនិត្យថា តើដល់ពេលត្រូវវិភាគឬនៅ (រៀងរាល់ 500ms)
         if (timestamp - lastFaceCheck < FACE_CHECK_INTERVAL) {
             requestAnimationFrame(analysisLoop); // បន្ត Loop ទៅ Frame បន្ទាប់ តែមិនវិភាគ
             return; // រំលងការវិភាគ
@@ -199,9 +264,13 @@ function startAdvancedFaceAnalysis(videoElement, statusElement, debugElement, re
                 return; 
             }
 
-            const detections = await faceapi.detectSingleFace(videoElement, new faceapi.TinyFaceDetectorOptions())
+            // ========== START: MODIFICATION (Smarter Model) ==========
+            // --- ប្តូរទៅប្រើ Model ឆ្លាតជាងមុន សម្រាប់ការវិភាគផ្ទាល់ ---
+            const detections = await faceapi.detectSingleFace(videoElement, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 }))
                                         .withFaceLandmarks(true)
                                         .withFaceDescriptor();
+            // ========== END: MODIFICATION (Smarter Model) ==========
+
 
             // ពិនិត្យទី១៖ តើមានមុខឬអត់?
             if (!detections) {
@@ -232,7 +301,7 @@ function startAdvancedFaceAnalysis(videoElement, statusElement, debugElement, re
                     statusElement.textContent = 'រកឃើញ! កំពុងផ្ទៀងផ្ទាត់...';
                     const distance = faceapi.euclideanDistance(referenceDescriptor, detections.descriptor);
                     
-                    // បង្ហាញ "ចំងាយ" (distance) មិនមែន "ភាពស្រដៀងគ្នា" (similarity)
+                    // បង្ហាញ "ចំងាយ" (distance)
                     debugElement.textContent = `ចំងាយ: ${distance.toFixed(2)} (ត្រូវតែ < ${VERIFICATION_THRESHOLD})`;
 
                     // ពិនិត្យទី៥៖ តើមុខត្រឹមត្រូវ (ចំងាយ < 0.5)?
@@ -390,7 +459,7 @@ if (cancelScanBtn) cancelScanBtn.addEventListener('click', () => {
     // --- Out Request Logic ---
     if (openOutRequestBtn) openOutRequestBtn.addEventListener('click', () => { if (!currentUser) return showCustomAlert("Error", "សូម Login ជាមុនសិន។"); const reqPhoto = document.getElementById('request-out-user-photo'); const reqName = document.getElementById('request-out-user-name'); const reqId = document.getElementById('request-out-user-id'); const reqDept = document.getElementById('request-out-user-department'); if(reqPhoto) reqPhoto.src = currentUser.photo || 'https://placehold.co/60x60/e2e8f0/64748b?text=User'; if(reqName) reqName.textContent = currentUser.name; if(reqId) reqId.textContent = currentUser.id; if(reqDept) reqDept.textContent = currentUser.department || 'មិនមាន'; if (outDurationSearchInput) outDurationSearchInput.value = ''; if (outReasonSearchInput) outReasonSearchInput.value = ''; if (outDateInput) outDateInput.value = getTodayString('dd/mm/yyyy'); selectedOutDuration = null; selectedOutReason = null; if (outRequestErrorEl) outRequestErrorEl.classList.add('hidden'); if (outRequestLoadingEl) outRequestLoadingEl.classList.add('hidden'); if (submitOutRequestBtn) submitOutRequestBtn.disabled = false; navigateTo('page-request-out'); });
     if (cancelOutRequestBtn) cancelOutRequestBtn.addEventListener('click', () => navigateTo('page-home'));
-    if (submitOutRequestBtn) submitOutRequestBtn.addEventListener('click', async () => { selectedOutDuration = outDurations.includes(outDurationSearchInput.value) ? outDurationSearchInput.value : null; selectedOutReason = outReasonSearchInput.value; if (!currentUser || !currentUser.id) return showCustomAlert("Error", "មានបញ្ហា៖ មិនអាចបញ្ជាក់អ្នកប្រើប្រាស់បានទេ។"); if (!selectedOutDuration) { if (outRequestErrorEl) { outRequestErrorEl.textContent = 'សូមជ្រើសរើស "រយៈពេល" ឲ្យបានត្រឹមត្រូវ (ពីក្នុងបញ្ជី)។'; outRequestErrorEl.classList.remove('hidden'); } return; } if (!selectedOutReason || selectedOutReason.trim() === '') { if (outRequestErrorEl) { outRequestErrorEl.textContent = 'សូមបំពេញ "មូលហេតុ" ជាមុនសិន។'; outRequestErrorEl.classList.remove('hidden'); } return; } if (outRequestErrorEl) outRequestErrorEl.classList.add('hidden'); if (outRequestLoadingEl) outRequestLoadingEl.classList.remove('hidden'); if (submitOutRequestBtn) submitOutRequestBtn.disabled = true; try { const dateVal = outDateInput ? outDateInput.value : getTodayString('dd/mm/yyyy'); const requestId = `out_${Date.now()}`; const requestData = { userId: currentUser.id, name: currentUser.name, department: currentUser.department || 'N/A', photo: currentUser.photo || null, duration: selectedOutDuration, reason: selectedOutReason.trim(), startDate: formatDateToDdMmmYyyy(dateVal), endDate: formatDateToDdMmmYyyy(dateVal), status: 'pending', requestedAt: serverTimestamp(), requestId: requestId, firestoreUserId: auth.currentUser ? auth.currentUser.uid : 'unknown_auth_user' }; if (!db || !outRequestsCollectionPath) throw new Error("Firestore DB or Out Collection Path is not initialized."); const requestRef = doc(db, outRequestsCollectionPath, requestId); await setDoc(requestRef, requestData); console.log("Firestore (out) write successful."); let message = `<b>🔔 សំណើសុំច្បាប់ចេញក្រៅ 🔔</b>\n\n`; message += `<b>ឈ្មោះ:</b> ${requestData.name} (${requestData.userId})\n`; message += `<b>ផ្នែក:</b> ${requestData.department}\n`; message += `<b>រយៈពេល:</b> ${requestData.duration}\n`; message += `<b>កាលបរិច្ឆេទ:</b> ${requestData.startDate}\n`; message += `<b>មូលហេតុ:</b> ${requestData.reason}\n\n`; message += `(សូមចូល Firestore ដើម្បីពិនិត្យ ID: \`${requestId}\`)`; await sendTelegramNotification(message); if (outRequestLoadingEl) outRequestLoadingEl.classList.add('hidden'); showCustomAlert('ជោគជ័យ!', 'សំណើរបស់អ្នកត្រូវបានផ្ញើដោយជោគជ័យ!', 'success'); navigateTo('page-history'); } catch (error) { console.error("Error submitting out request:", error); let displayError = error.message; if (error.code?.includes('permission-denied')) displayError = 'Missing or insufficient permissions. សូមពិនិត្យ Firestore Rules។'; if (outRequestErrorEl) { outRequestErrorEl.textContent = `Error: ${displayError}`; outRequestErrorEl.classList.remove('hidden'); } if (outRequestLoadingEl) outRequestLoadingEl.classList.add('hidden'); if (submitOutRequestBtn) submitOutRequestBtn.disabled = false; } });
+    if (submitOutRequestBtn) submitOutRequestBtn.addEventListener('click', async () => { selectedOutDuration = outDurations.includes(outDurationSearchInput.value) ? outDurationSearchInput.value : null; selectedOutReason = outReasonSearchInput.value; if (!currentUser || !currentUser.id) return showCustomAlert("Error", "មានបញ្ហា៖ មិនអាចបញ្ជាក់អ្នកប្រើប្រាស់បានទេ។"); if (!selectedOutDuration) { if (outRequestErrorEl) { outRequestErrorEl.textContent = 'សូមជ្រើសរើស "រយៈពេល" ឲ្យបានត្រឹមត្រូវ (ពីក្នុងបញ្ជី)។'; outRequestErrorEl.classList.remove('hidden'); } return; } if (!selectedOutReason || selectedOutReason.trim() === '') { if (outRequestErrorEl) { outRequestErrorEl.textContent = 'សូមបំពេញ "មូលហេតុ" ជាមុនសិន។'; outRequestErrorEl.classList.remove('hidden'); } return; } if (outRequestErrorEl) outRequestErrorEl.classList.add('hidden'); if (outRequestLoadingEl) leaveRequestLoadingEl.classList.remove('hidden'); if (submitOutRequestBtn) submitOutRequestBtn.disabled = true; try { const dateVal = outDateInput ? outDateInput.value : getTodayString('dd/mm/yyyy'); const requestId = `out_${Date.now()}`; const requestData = { userId: currentUser.id, name: currentUser.name, department: currentUser.department || 'N/A', photo: currentUser.photo || null, duration: selectedOutDuration, reason: selectedOutReason.trim(), startDate: formatDateToDdMmmYyyy(dateVal), endDate: formatDateToDdMmmYyyy(dateVal), status: 'pending', requestedAt: serverTimestamp(), requestId: requestId, firestoreUserId: auth.currentUser ? auth.currentUser.uid : 'unknown_auth_user' }; if (!db || !outRequestsCollectionPath) throw new Error("Firestore DB or Out Collection Path is not initialized."); const requestRef = doc(db, outRequestsCollectionPath, requestId); await setDoc(requestRef, requestData); console.log("Firestore (out) write successful."); let message = `<b>🔔 សំណើសុំច្បាប់ចេញក្រៅ 🔔</b>\n\n`; message += `<b>ឈ្មោះ:</b> ${requestData.name} (${requestData.userId})\n`; message += `<b>ផ្នែក:</b> ${requestData.department}\n`; message += `<b>រយៈពេល:</b> ${requestData.duration}\n`; message += `<b>កាលបរិច្ឆេទ:</b> ${requestData.startDate}\n`; message += `<b>មូលហេតុ:</b> ${requestData.reason}\n\n`; message += `(សូមចូល Firestore ដើម្បីពិនិត្យ ID: \`${requestId}\`)`; await sendTelegramNotification(message); if (outRequestLoadingEl) outRequestLoadingEl.classList.add('hidden'); showCustomAlert('ជោគជ័យ!', 'សំណើរបស់អ្នកត្រូវបានផ្ញើដោយជោគជ័យ!', 'success'); navigateTo('page-history'); } catch (error) { console.error("Error submitting out request:", error); let displayError = error.message; if (error.code?.includes('permission-denied')) displayError = 'Missing or insufficient permissions. សូមពិនិត្យ Firestore Rules។'; if (outRequestErrorEl) { outRequestErrorEl.textContent = `Error: ${displayError}`; outRequestErrorEl.classList.remove('hidden'); } if (outRequestLoadingEl) outRequestLoadingEl.classList.add('hidden'); if (submitOutRequestBtn) submitOutRequestBtn.disabled = false; } });
 
     // --- Telegram Helper ---
     async function sendTelegramNotification(message) { console.log("Sending Telegram notification..."); try { const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`; const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: CHAT_ID, text: message, parse_mode: 'HTML' }) }); if (!res.ok) { const errBody = await res.text(); console.error("Telegram API error:", res.status, errBody); } else { console.log("Telegram notification sent successfully."); } } catch (e) { console.error("Failed to send Telegram message:", e); } }
