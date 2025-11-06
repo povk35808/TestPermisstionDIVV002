@@ -1,22 +1,6 @@
-// ========== File: app.js (2 of 2) ==========
-// នេះគឺជា "Controller"  chính ដែលគ្រប់គ្រង App
-// វាហៅប្រើ "ខួរក្បាល" ពី face-scan.js
-
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { getFirestore, doc, setDoc, updateDoc, deleteDoc, getDoc, collection, query, where, onSnapshot, serverTimestamp, Timestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-// ========== START: NEW IMPORT ==========
-// ហៅ "ខួរក្បាល" ស្កេនមុខ ពីហ្វਾਈលថ្មី
-import {
-    loadFaceApiModels,
-    getReferenceDescriptor,
-    clearReferenceDescriptor,
-    startAdvancedFaceAnalysis,
-    stopAdvancedFaceAnalysis
-} from "./face-scan.js"; 
-// ========== END: NEW IMPORT ==========
-
 
 // Enable Firestore debug logging
 setLogLevel('debug');
@@ -28,13 +12,24 @@ const firebaseConfig = { apiKey: "AIzaSyDjr_Ha2RxOWEumjEeSdluIW3JmyM76mVk", auth
 let db, auth, userId;
 let historyUnsubscribe = null, outHistoryUnsubscribe = null;
 let allUsersData = [], currentUser = null, selectedUserId = null;
-// --- (បានផ្លាស់ទី 'face analysis state' ទៅ face-scan.js) ---
-let currentReturnRequestId = null;
+let userReferenceDescriptor = null, currentReturnRequestId = null;
 let touchstartX = 0, touchendX = 0, isSwiping = false;
 let selectedLeaveDuration = null;
 let selectedLeaveReason = null;
 let selectedOutDuration = null;
 let selectedOutReason = null;
+
+// --- START: New Face Analysis State ---
+let isFaceAnalysisRunning = false;
+let lastFaceCheck = 0;
+// ========== START: MODIFICATION (Smoothness) ==========
+// ប្រើ 500ms ព្រោះ SsdMobilenetv1 ធ្ងន់ជាង TinyDetector
+// នេះជួយឲ្យកម្មវិធីរលូន (smooth) មិនគាំង (lag)
+const FACE_CHECK_INTERVAL = 500; 
+// ========== END: MODIFICATION (Smoothness) ==========
+// --- END: New Face Analysis State ---
+
+// المتغيرات​ថ្មី​សម្រាប់​ទំព័រ​វត្តមាន
 let openDailyAttendanceBtn, attendancePage, closeAttendancePageBtn, attendanceIframe;
 
 // --- Google Sheet Config ---
@@ -107,9 +102,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- Setup Dropdowns AFTER elements are available ---
     
     // ========== START: CRITICAL FIX 1 ==========
-    setupSearchableDropdown('user-search', 'user-dropdown', [], (id) => { 
+    setupSearchableDropdown('user-search', 'user-dropdown', [], (id) => { // Initially empty, populated by fetchUsers
         selectedUserId = id;
-        clearReferenceDescriptor(); // ហៅ "ខួរក្បាល" ឲ្យលុប Cache
+        
+        // --- CRITICAL FIX ---
+        // លុប "កូនសោគោល" ចាស់ចោល រាល់ពេលជ្រើសរើស User ថ្មី
+        userReferenceDescriptor = null; 
+        console.log("Reference Descriptor Cleared on User Select.");
+        // --- END CRITICAL FIX ---
+
         if (scanFaceBtn) scanFaceBtn.disabled = (id === null || !modelStatusEl || modelStatusEl.textContent !== 'Model ស្កេនមុខបានទាញយករួចរាល់');
         console.log("Selected User ID:", selectedUserId);
     });
@@ -123,21 +124,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupSearchableDropdown('edit-reason-search', 'edit-reason-dropdown', [], () => {}, true);
 
     // --- Firebase Initialization & Auth ---
-    try { if (!firebaseConfig.projectId) throw new Error("projectId not provided in firebase.initializeApp."); console.log("Initializing Firebase with Config:", firebaseConfig); const app = initializeApp(firebaseConfig); db = getFirestore(app); auth = getAuth(app); const canvasAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'; leaveRequestsCollectionPath = `/artifacts/${canvasAppId}/public/data/leave_requests`; outRequestsCollectionPath = `/artifacts/${canvasAppId}/public/data/out_requests`; console.log("Using Firestore Leave Path:", leaveRequestsCollectionPath); console.log("Using Firestore Out Path:", outRequestsCollectionPath); onAuthStateChanged(auth, (user) => { if (user) { console.log("Firebase Auth state changed. User UID:", user.uid); userId = user.uid; function isClient() { const ua = navigator.userAgent || navigator.vendor || window.opera; return ( (ua.indexOf('FBAN') > -1) || (ua.indexOf('FBAV') > -1) || (ua.indexOf('Twitter') > -1) || (ua.indexOf('Telegram') > -1) || (ua.indexOf('WebView') > -1) || (ua.indexOf('wv') > -1) ); } if (isClient()) { console.log("Detected In-App Browser."); if (inAppWarning) inAppWarning.classList.remove('hidden'); if (modelStatusEl) modelStatusEl.textContent = 'សូមបើកក្នុង Browser ពេញលេញ'; if (dataLoadingIndicator) dataLoadingIndicator.classList.add('hidden'); } else { console.log("Detected Full Browser."); if (inAppWarning) inAppWarning.classList.add('hidden'); if (typeof faceapi !== 'undefined') { if (scanFaceBtn) scanFaceBtn.disabled = true; 
-            // ហៅ "ខួរក្បាល" ឲ្យទាញយក Model
-            loadFaceApiModels(modelStatusEl).then(success => {
-                if (success && scanFaceBtn) {
-                    scanFaceBtn.disabled = (selectedUserId === null);
-                }
-            });
-        } else { console.error("Face-API.js មិនអាចទាញយកបានត្រឹមត្រូវទេ។"); if (modelStatusEl) modelStatusEl.textContent = 'Error: មិនអាចទាញយក Library ស្កេនមុខបាន'; } const rememberedUser = localStorage.getItem('leaveAppUser'); if (rememberedUser) { try { const parsedUser = JSON.parse(rememberedUser); if (parsedUser && parsedUser.id) { console.log("Found remembered user:", parsedUser.id); currentUser = parsedUser; showLoggedInState(parsedUser); fetchUsers(); return; } } catch (e) { localStorage.removeItem('leaveAppUser'); } } console.log("No remembered user found, starting normal app flow."); initializeAppFlow(); } } else { console.log("Firebase Auth: No user signed in. Attempting anonymous sign-in..."); signInAnonymously(auth).catch(anonError => { console.error("Error during automatic anonymous sign-in attempt:", anonError); if (criticalErrorDisplay) { criticalErrorDisplay.classList.remove('hidden'); criticalErrorDisplay.textContent = `Critical Error: មិនអាច Sign In បានទេ។ ${anonError.message}។ សូម Refresh ម្ដងទៀត។`; } }); } }); try { console.log("Attempting initial Anonymous Sign-In..."); await signInAnonymously(auth); console.log("Firebase Auth: Initial Anonymous Sign-In successful (or already signed in)."); } catch (e) { console.error("Initial Anonymous Sign-In Error:", e); if (e.code === 'auth/operation-not-allowed') { throw new Error("សូមបើក 'Anonymous' sign-in នៅក្នុង Firebase Console។"); } throw new Error(`Firebase Sign-In Error: ${e.message}`); } } catch (e) { console.error("Firebase Initialization/Auth Error:", e); if(criticalErrorDisplay) { criticalErrorDisplay.classList.remove('hidden'); criticalErrorDisplay.textContent = `Critical Error: មិនអាចតភ្ជាប់ Firebase បានទេ។ ${e.message}។ សូម Refresh ម្ដងទៀត។`; } if(loginPage) loginPage.classList.add('hidden'); }
+    try { if (!firebaseConfig.projectId) throw new Error("projectId not provided in firebase.initializeApp."); console.log("Initializing Firebase with Config:", firebaseConfig); const app = initializeApp(firebaseConfig); db = getFirestore(app); auth = getAuth(app); const canvasAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'; leaveRequestsCollectionPath = `/artifacts/${canvasAppId}/public/data/leave_requests`; outRequestsCollectionPath = `/artifacts/${canvasAppId}/public/data/out_requests`; console.log("Using Firestore Leave Path:", leaveRequestsCollectionPath); console.log("Using Firestore Out Path:", outRequestsCollectionPath); onAuthStateChanged(auth, (user) => { if (user) { console.log("Firebase Auth state changed. User UID:", user.uid); userId = user.uid; function isClient() { const ua = navigator.userAgent || navigator.vendor || window.opera; return ( (ua.indexOf('FBAN') > -1) || (ua.indexOf('FBAV') > -1) || (ua.indexOf('Twitter') > -1) || (ua.indexOf('Telegram') > -1) || (ua.indexOf('WebView') > -1) || (ua.indexOf('wv') > -1) ); } if (isClient()) { console.log("Detected In-App Browser."); if (inAppWarning) inAppWarning.classList.remove('hidden'); if (modelStatusEl) modelStatusEl.textContent = 'សូមបើកក្នុង Browser ពេញលេញ'; if (dataLoadingIndicator) dataLoadingIndicator.classList.add('hidden'); } else { console.log("Detected Full Browser."); if (inAppWarning) inAppWarning.classList.add('hidden'); if (typeof faceapi !== 'undefined') { if (scanFaceBtn) scanFaceBtn.disabled = true; loadFaceApiModels(); } else { console.error("Face-API.js មិនអាចទាញយកបានត្រឹមត្រូវទេ។"); if (modelStatusEl) modelStatusEl.textContent = 'Error: មិនអាចទាញយក Library ស្កេនមុខបាន'; } const rememberedUser = localStorage.getItem('leaveAppUser'); if (rememberedUser) { try { const parsedUser = JSON.parse(rememberedUser); if (parsedUser && parsedUser.id) { console.log("Found remembered user:", parsedUser.id); currentUser = parsedUser; showLoggedInState(parsedUser); fetchUsers(); return; } } catch (e) { localStorage.removeItem('leaveAppUser'); } } console.log("No remembered user found, starting normal app flow."); initializeAppFlow(); } } else { console.log("Firebase Auth: No user signed in. Attempting anonymous sign-in..."); signInAnonymously(auth).catch(anonError => { console.error("Error during automatic anonymous sign-in attempt:", anonError); if (criticalErrorDisplay) { criticalErrorDisplay.classList.remove('hidden'); criticalErrorDisplay.textContent = `Critical Error: មិនអាច Sign In បានទេ។ ${anonError.message}។ សូម Refresh ម្ដងទៀត។`; } }); } }); try { console.log("Attempting initial Anonymous Sign-In..."); await signInAnonymously(auth); console.log("Firebase Auth: Initial Anonymous Sign-In successful (or already signed in)."); } catch (e) { console.error("Initial Anonymous Sign-In Error:", e); if (e.code === 'auth/operation-not-allowed') { throw new Error("សូមបើក 'Anonymous' sign-in នៅក្នុង Firebase Console។"); } throw new Error(`Firebase Sign-In Error: ${e.message}`); } } catch (e) { console.error("Firebase Initialization/Auth Error:", e); if(criticalErrorDisplay) { criticalErrorDisplay.classList.remove('hidden'); criticalErrorDisplay.textContent = `Critical Error: មិនអាចតភ្ជាប់ Firebase បានទេ។ ${e.message}។ សូម Refresh ម្ដងទៀត។`; } if(loginPage) loginPage.classList.add('hidden'); }
 
     // --- Main App Logic ---
     function initializeAppFlow() { console.log("initializeAppFlow called (for non-remembered user)."); console.log("Fetching users for initial login..."); if (dataLoadingIndicator) dataLoadingIndicator.classList.remove('hidden'); fetchUsers(); }
     async function fetchUsers() { console.log("Fetching users from Google Sheet..."); try { const response = await fetch(GVIZ_URL); if (!response.ok) throw new Error(`Google Sheet fetch failed: ${response.status}`); const text = await response.text(); const match = text.match(/google\.visualization\.Query\.setResponse\((.*)\);/s); if (!match || !match[1]) throw new Error("ទម្រង់ការឆ្លើយតបពី Google Sheet មិនត្រឹមត្រូវ"); const json = JSON.parse(match[1]); if (json.table && json.table.rows && json.table.rows.length > 0) { allUsersData = json.table.rows.map(row => ({ id: row.c?.[0]?.v ?? null, name: row.c?.[1]?.v ?? null, photo: row.c?.[2]?.v ?? null, gender: row.c?.[3]?.v ?? null, group: row.c?.[4]?.v ?? null, department: row.c?.[5]?.v ?? null })); console.log(`Fetched ${allUsersData.length} users.`);
     populateUserDropdown(allUsersData, 'user-search', 'user-dropdown', (id) => { 
         selectedUserId = id; 
-        clearReferenceDescriptor(); // ហៅ "ខួរក្បាល" ឲ្យលុប Cache
+        userReferenceDescriptor = null; // CRITICAL FIX
+        console.log("Reference Descriptor Cleared on populateUserDropdown.");
         if (scanFaceBtn) scanFaceBtn.disabled = (id === null || !modelStatusEl || modelStatusEl.textContent !== 'Model ស្កេនមុខបានទាញយករួចរាល់'); 
         console.log("Selected User ID:", selectedUserId); 
     });
@@ -147,93 +142,292 @@ document.addEventListener('DOMContentLoaded', async () => {
     function setupSearchableDropdown(inputId, dropdownId, items, onSelectCallback, allowCustom = false) { const searchInput = document.getElementById(inputId); const dropdown = document.getElementById(dropdownId); if (!searchInput || !dropdown) { console.error(`Dropdown elements not found: inputId=${inputId}, dropdownId=${dropdownId}`); return; } function populateDropdown(filter = '') { dropdown.innerHTML = ''; const filteredItems = items.filter(item => item.text && item.text.toLowerCase().includes(filter.toLowerCase())); if (filteredItems.length === 0 && !allowCustom && inputId !== 'user-search') { /* Allow user dropdown to be empty */ dropdown.classList.add('hidden'); return; } filteredItems.forEach(item => { const itemEl = document.createElement('div'); itemEl.textContent = item.text; itemEl.dataset.value = item.value; itemEl.className = 'px-4 py-2 hover:bg-gray-100 cursor-pointer text-sm'; itemEl.addEventListener('mousedown', (e) => { e.preventDefault(); searchInput.value = item.text; dropdown.classList.add('hidden'); if (onSelectCallback) onSelectCallback(item.value); console.log(`Selected dropdown item: ${item.text} (value: ${item.value})`); }); dropdown.appendChild(itemEl); }); dropdown.classList.remove('hidden'); } searchInput.addEventListener('input', () => { const currentValue = searchInput.value; populateDropdown(currentValue); const exactMatch = items.find(item => item.text === currentValue); const selection = exactMatch ? exactMatch.value : (allowCustom ? currentValue : null); if (onSelectCallback) onSelectCallback(selection); }); searchInput.addEventListener('focus', () => { populateDropdown(searchInput.value); }); searchInput.addEventListener('blur', () => { setTimeout(() => { dropdown.classList.add('hidden'); const currentValue = searchInput.value; const validItem = items.find(item => item.text === currentValue); if (validItem) { if (onSelectCallback) onSelectCallback(validItem.value); } else if (allowCustom && currentValue.trim() !== '') { if (onSelectCallback) onSelectCallback(currentValue); } else if (inputId !== 'user-search') { /* Don't clear user search on blur */ console.log(`Invalid selection on ${inputId}: ${currentValue}`); if (onSelectCallback) onSelectCallback(null); } }, 150); }); }
     function populateUserDropdown(users, inputId, dropdownId, onSelectCallback) { const userItems = users.filter(user => user.id && user.name).map(user => ({ text: `${user.id} - ${user.name}`, value: user.id })); setupSearchableDropdown(inputId, dropdownId, userItems, onSelectCallback, false); }
 
+    // --- Face Scan Logic ---
 
-    // --- Face Scan Logic (Refactored) ---
-    // (កូដ 4 មុខងារធំៗ ត្រូវបានផ្លាស់ទីទៅ face-scan.js)
-
-    function stopFaceScan() { 
-        stopAdvancedFaceAnalysis(); // ហៅ "ខួរក្បាល" ឲ្យបញ្ឈប់ Loop
-        if (video && video.srcObject) { 
-            video.srcObject.getTracks().forEach(track => track.stop()); 
-            video.srcObject = null; 
-        } 
-    }
-
-    async function startFaceScan() { 
-        console.log("startFaceScan called."); 
-        if (!selectedUserId) { 
-            showCustomAlert("Error", "សូមជ្រើសរើសអត្តលេខរបស់អ្នកជាមុនសិន"); 
-            return; 
-        } 
-        const user = allUsersData.find(u => u.id === selectedUserId); 
-        if (!user || !user.photo) { 
-            showCustomAlert("Error", "មិនអាចទាញយករូបថតយោងរបស់អ្នកបានទេ។ សូមទាក់ទង IT Support។"); 
-            return; 
-        } 
-        if (faceScanModal) faceScanModal.classList.remove('hidden'); 
-        if (scanStatusEl) scanStatusEl.textContent = 'កំពុងព្យាយាមបើកកាមេរ៉ា...'; 
-        
+    // ========== START: MODIFICATION (Smarter Model) ==========
+    async function loadFaceApiModels() { 
+        if (!modelStatusEl) return; 
         try { 
-            if (scanStatusEl) scanStatusEl.textContent = 'កំពុងវិភាគរូបថតយោង...'; 
-            // ហៅ "ខួរក្បាល" ឲ្យបង្កើត "កូនសោគោល"
-            const referenceDescriptor = await getReferenceDescriptor(user.photo); 
-            
-            if (scanStatusEl) scanStatusEl.textContent = 'កំពុងស្នើសុំបើកកាមេរ៉ា...'; 
-            const stream = await navigator.mediaDevices.getUserMedia({ video: {} }); 
-
-            if (video) video.srcObject = stream; 
-            if (scanStatusEl) scanStatusEl.textContent = 'សូមដាក់មុខរបស់អ្នកឲ្យចំកាមេរ៉ា'; 
-            
-            stopAdvancedFaceAnalysis(); // បញ្ឈប់ Loop ចាស់ (ប្រសិនបើមាន)
-
-            // កំណត់អ្វីដែលត្រូវធ្វើនៅពេលជោគជ័យ
-            const onSuccess = () => {
-                console.log("Login Scan Success!");
-                if (video && video.srcObject) { 
-                    video.srcObject.getTracks().forEach(track => track.stop()); 
-                    video.srcObject = null; 
-                }
-                loginUser(selectedUserId); 
-                setTimeout(() => {
-                    if (faceScanModal) faceScanModal.classList.add('hidden');
-                }, 1000);
-            };
-
-            // ហៅ "ខួរក្បាល" ឲ្យចាប់ផ្តើមវិភាគ
-            startAdvancedFaceAnalysis(
-                video, 
-                scanStatusEl, 
-                scanDebugEl, 
-                'face-guide-overlay-login', // បញ្ជូន ID របស់ Oval Guide ថ្មី
-                referenceDescriptor, 
-                onSuccess
-            );
-     
+            console.log("Loading face-api models (SsdMobilenetv1)..."); 
+            modelStatusEl.textContent = 'កំពុងទាញយក Model ស្កេនមុខ...'; 
+            await Promise.all([ 
+                // --- ប្តូរទៅប្រើ Model ឆ្លាតជាងមុន ---
+                faceapi.nets.ssdMobilenetv1.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights'),
+                // --- Model ទាំងពីរនេះ នៅដដែល ---
+                faceapi.nets.faceLandmark68TinyNet.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights'), 
+                faceapi.nets.faceRecognitionNet.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights'), 
+            ]); 
+            modelStatusEl.textContent = 'Model ស្កេនមុខបានទាញយករួចរាល់'; 
+            console.log("Face-api models loaded successfully (SsdMobilenetv1)."); 
+            if (scanFaceBtn) scanFaceBtn.disabled = (selectedUserId === null); 
         } catch (error) { 
-            console.error("Error during face scan process:", error); 
-            if (scanStatusEl) scanStatusEl.textContent = `Error: ${error.message}`; 
-            stopFaceScan(); 
-            setTimeout(() => { 
-                if (faceScanModal) faceScanModal.classList.add('hidden'); 
-                showCustomAlert("បញ្ហាស្កេនមុខ", `មានបញ្ហា៖\n${error.message}\nសូមប្រាកដថាអ្នកបានអនុញ្ញាតឲ្យប្រើកាមេរ៉ា។`); 
-            }, 1500); 
+            console.error("Error ពេលទាញយក Model របស់ face-api:", error); 
+            modelStatusEl.textContent = 'Error: មិនអាចទាញយក Model បាន'; 
         } 
     }
+    // ========== END: MODIFICATION (Smarter Model) ==========
 
-    // ========== START: CRITICAL FIX 2 ==========
-    if (scanFaceBtn) scanFaceBtn.addEventListener('click', startFaceScan);
-    if (cancelScanBtn) cancelScanBtn.addEventListener('click', () => { 
-        stopFaceScan(); 
-        clearReferenceDescriptor(); // ហៅ "ខួរក្បាល" ឲ្យលុប Cache
-        if (faceScanModal) faceScanModal.classList.add('hidden'); 
-    });
-    // ========== END: CRITICAL FIX 2 ==========
+    // ========== START: MODIFICATION (Better Master Key) ==========
+    async function getReferenceDescriptor(userPhotoUrl) { 
+        if (userReferenceDescriptor) { 
+            console.log("Using cached reference descriptor."); 
+            return userReferenceDescriptor; 
+        } 
+        if (!userPhotoUrl) throw new Error("Missing user photo URL"); 
+        console.log("Fetching and computing new reference descriptor (SsdMobilenetv1)..."); 
+        let referenceImage; 
+        try { 
+            const img = new Image(); 
+            img.crossOrigin = 'anonymous'; 
+            img.src = userPhotoUrl; 
+            await new Promise((resolve, reject) => { 
+                img.onload = () => resolve(); 
+                img.onerror = (err) => reject(new Error('Failed to fetch (មិនអាចទាញយករូបថតយោងបាន)។ សូមប្រាកដថា Link រូបថតត្រឹមត្រូវ។')); 
+            }); 
+            referenceImage = img; 
+        } catch (fetchError) { 
+            throw fetchError; 
+        } 
+        
+        let referenceDetection; 
+        try { 
+            // --- ប្តូរទៅប្រើ Model ឆ្លាតជាងមុន ដើម្បីបង្កើត "កូនសោគោល" ---
+            const options = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
+            referenceDetection = await faceapi.detectSingleFace(referenceImage, options)
+                                        .withFaceLandmarks(true)
+                                        .withFaceDescriptor(); 
+            if (!referenceDetection) throw new Error('រកមិនឃើញមុខនៅក្នុងរូបថតយោង'); 
+        } catch (descriptorError) { 
+            console.error("Descriptor Error:", descriptorError); 
+            throw new Error('មិនអាចវិភាគមុខពីរូបថតយោងបានទេ (រូបថតអាចមិនច្បាស់)។'); 
+        } 
+        userReferenceDescriptor = referenceDetection.descriptor; 
+        return userReferenceDescriptor; 
+    }
+    // ========== END: MODIFICATION (Better Master Key) ==========
+
+
+// ========== START: NEW ADVANCED FACE ANALYSIS (rAF) ==========
+
+/**
+ * បញ្ឈប់ Loop វិភាគផ្ទៃមុខ
+ */
+function stopAdvancedFaceAnalysis() {
+    console.log("Stopping Advanced Face Analysis...");
+    isFaceAnalysisRunning = false;
+}
+
+/**
+ * ចាប់ផ្តើមការវិភាគផ្ទៃមុខកម្រិតខ្ពស់ ដោយប្រើ requestAnimationFrame
+ * @param {HTMLVideoElement} videoElement - ធាតុ <video>
+ * @param {HTMLElement} statusElement - ធាតុ <p> សម្រាប់បង្ហាញសារ
+ * @param {HTMLElement} debugElement - ធាតុ <p> សម្រាប់បង្ហាញ debug
+ * @param {faceapi.L2EuclideanDistance} referenceDescriptor - "កូនសោគោល" សម្រាប់ប្រៀបធៀប
+ * @param {Function} onSuccessCallback - Function ដែលត្រូវហៅ (call) នៅពេលផ្ទៀងផ្ទាត់ជោគជ័យ
+ */
+function startAdvancedFaceAnalysis(videoElement, statusElement, debugElement, referenceDescriptor, onSuccessCallback) {
+    console.log("Starting Advanced Face Analysis (rAF)...");
+    isFaceAnalysisRunning = true;
+    lastFaceCheck = 0; // Reset ម៉ោងពិនិត្យចុងក្រោយ
+
+    // --- កំណត់ "ច្បាប់" សម្រាប់ផ្ទៃមុខ ---
+    const VERIFICATION_THRESHOLD = 0.5; // តឹងរ៉ឹងជាងមុន (0.5 ជំនួស 0.55)
+    const MIN_WIDTH_PERCENT = 0.3;     // មុខត្រូវមានទំហំយ៉ាងតិច 30% នៃវីដេអូ
+    const MAX_WIDTH_PERCENT = 0.7;     // មុខត្រូវមានទំហំយ៉ាងច្រើន 70%
+    const CENTER_TOLERANCE_PERCENT = 0.2; // ទីតាំងកណ្តាល អាច lệch បាន 20%
+
+    // គណនាទំហំជា pixels (គណនាម្តងបានហើយ)
+    const videoWidth = videoElement.clientWidth || 320; // Fallback ក្នុងករណី video មិនទាន់មានទំហំ
+    const videoCenterX = videoWidth / 2;
+    const minPixelWidth = videoWidth * MIN_WIDTH_PERCENT;
+    const maxPixelWidth = videoWidth * MAX_WIDTH_PERCENT;
+    const centerTolerancePixels = videoWidth * CENTER_TOLERANCE_PERCENT;
+    
+    console.log(`Analysis Rules: Threshold=<${VERIFICATION_THRESHOLD}, minWidth=${minPixelWidth}px, maxWidth=${maxPixelWidth}px`);
+
+    // --- បង្កើត Loop ថ្មី ដោយប្រើ requestAnimationFrame ---
+    async function analysisLoop(timestamp) {
+        if (!isFaceAnalysisRunning) return; // បញ្ឈប់ Loop
+
+        // --- Throttling Logic (ធ្វើឲ្យលឿន តែមិនគាំង) ---
+        // ពិនិត្យថា តើដល់ពេលត្រូវវិភាគឬនៅ (រៀងរាល់ 500ms)
+        if (timestamp - lastFaceCheck < FACE_CHECK_INTERVAL) {
+            requestAnimationFrame(analysisLoop); // បន្ត Loop ទៅ Frame បន្ទាប់ តែមិនវិភាគ
+            return; // រំលងការវិភាគ
+        }
+        lastFaceCheck = timestamp;
+        // --- End Throttling ---
+
+        try {
+            if (!videoElement || videoElement.readyState < 3) {
+                requestAnimationFrame(analysisLoop); // បន្ត Loop រង់ចាំវីដេអូ
+                return; 
+            }
+
+            // ========== START: MODIFICATION (Smarter Model) ==========
+            // --- ប្តូរទៅប្រើ Model ឆ្លាតជាងមុន សម្រាប់ការវិភាគផ្ទាល់ ---
+            const detections = await faceapi.detectSingleFace(videoElement, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 }))
+                                        .withFaceLandmarks(true)
+                                        .withFaceDescriptor();
+            // ========== END: MODIFICATION (Smarter Model) ==========
+
+
+            // ពិនិត្យទី១៖ តើមានមុខឬអត់?
+            if (!detections) {
+                statusElement.textContent = 'រកមិនឃើញផ្ទៃមុខ...';
+                debugElement.textContent = '';
+            } else {
+                const box = detections.detection.box;
+                const faceCenterX = box.x + box.width / 2;
+                
+                // ពិនិត្យទី២៖ តើមុខនៅឆ្ងាយពេក (តូចពេក)?
+                if (box.width < minPixelWidth) {
+                    statusElement.textContent = 'សូមរំកលមុខមកជិតបន្តិច';
+                    debugElement.textContent = `ទំហំ: ${Math.round(box.width)}px (តូចពេក)`;
+                } 
+                // ពិនិត្យទី៣៖ តើមុខនៅជិតពេក (ធំពេក)?
+                else if (box.width > maxPixelWidth) {
+                    statusElement.textContent = 'សូមរំកលមុខថយក្រោយបន្តិច';
+                    debugElement.textContent = `ទំហំ: ${Math.round(box.width)}px (ធំពេក)`;
+                } 
+                // ពិនិត្យទី៤៖ តើមុខនៅចំកណ្តាល?
+                else if (Math.abs(faceCenterX - videoCenterX) > centerTolerancePixels) {
+                    statusElement.textContent = 'សូមដាក់មុខនៅចំកណ្តាល';
+                    const distanceToCenter = Math.abs(faceCenterX - videoCenterX);
+                    debugElement.textContent = ` lệch: ${Math.round(distanceToCenter)}px`;
+                } 
+                // --- ឆ្លងកាត់គ្រប់លក្ខខណ្ឌ! ចាប់ផ្តើមផ្ទៀងផ្ទាត់ ---
+                else {
+                    statusElement.textContent = 'រកឃើញ! កំពុងផ្ទៀងផ្ទាត់...';
+                    const distance = faceapi.euclideanDistance(referenceDescriptor, detections.descriptor);
+                    
+                    // បង្ហាញ "ចំងាយ" (distance)
+                    debugElement.textContent = `ចំងាយ: ${distance.toFixed(2)} (ត្រូវតែ < ${VERIFICATION_THRESHOLD})`;
+
+                    // ពិនិត្យទី៥៖ តើមុខត្រឹមត្រូវ (ចំងាយ < 0.5)?
+                    if (distance < VERIFICATION_THRESHOLD) {
+                        statusElement.textContent = 'ផ្ទៀងផ្ទាត់ជោគជ័យ!';
+                        isFaceAnalysisRunning = false; // បញ្ឈប់ Loop
+                        onSuccessCallback(); // ហៅ Function ជោគជ័យ
+                        return; // --- ចេញពី Loop ---
+                    } else {
+                        statusElement.textContent = 'មុខមិនត្រឹមត្រូវ... សូមព្យាយាមម្តងទៀត';
+                    }
+                }
+            }
+        
+        } catch (error) {
+            console.error("Error during face analysis rAF loop:", error);
+            statusElement.textContent = 'មានបញ្ហាពេលវិភាគ...';
+        }
+        
+        // បន្ត Loop ទៅ Frame បន្ទាប់
+        requestAnimationFrame(analysisLoop);
+    }
+
+    // --- ចាប់ផ្តើម Loop ---
+    requestAnimationFrame(analysisLoop);
+}
+
+// ========== END: NEW ADVANCED FACE ANALYSIS (rAF) ==========
+
+
+// ========== START: MODIFIED scan/stop functions ==========
+
+async function startFaceScan() { 
+    console.log("startFaceScan called."); 
+    if (!selectedUserId) { 
+        showCustomAlert("Error", "សូមជ្រើសរើសអត្តលេខរបស់អ្នកជាមុនសិន"); 
+        return; 
+    } 
+    const user = allUsersData.find(u => u.id === selectedUserId); 
+    if (!user || !user.photo) { 
+        showCustomAlert("Error", "មិនអាចទាញយករូបថតយោងរបស់អ្នកបានទេ។ សូមទាក់ទង IT Support។"); 
+        return; 
+    } 
+    if (faceScanModal) faceScanModal.classList.remove('hidden'); 
+    if (scanStatusEl) scanStatusEl.textContent = 'កំពុងព្យាយាមបើកកាមេរ៉ា...'; 
+    
+    try { 
+        if (scanStatusEl) scanStatusEl.textContent = 'កំពុងវិភាគរូបថតយោង...'; 
+        const referenceDescriptor = await getReferenceDescriptor(user.photo); 
+        if (scanStatusEl) scanStatusEl.textContent = 'កំពុងស្នើសុំបើកកាមេរ៉ា...'; 
+        const stream = await navigator.mediaDevices.getUserMedia({ video: {} }); 
+
+        // --- START: MODIFIED BLOCK (rAF) ---
+        if (video) video.srcObject = stream; 
+        if (scanStatusEl) scanStatusEl.textContent = 'សូមដាក់មុខរបស់អ្នកឲ្យចំកាមេរ៉ា'; 
+        
+        stopAdvancedFaceAnalysis(); // បញ្ឈប់ Loop ចាស់ (ប្រសិនបើមាន)
+
+        // កំណត់អ្វីដែលត្រូវធ្វើនៅពេលជោគជ័យ
+        const onSuccess = () => {
+            console.log("Login Scan Success!");
+            // Loop ឈប់ដោយខ្លួនឯង តែយើងត្រូវបិទវីដេអូ
+            if (video && video.srcObject) { 
+                video.srcObject.getTracks().forEach(track => track.stop()); 
+                video.srcObject = null; 
+            }
+            loginUser(selectedUserId); // ដំណើរការ Login
+            setTimeout(() => {
+                if (faceScanModal) faceScanModal.classList.add('hidden');
+            }, 1000);
+        };
+
+        // ហៅ Function វិភាគថ្មី
+        startAdvancedFaceAnalysis(
+            video, 
+            scanStatusEl, 
+            scanDebugEl, 
+            referenceDescriptor, 
+            onSuccess
+        );
+        // --- END: MODIFIED BLOCK (rAF) ---
+ 
+    } catch (error) { 
+        console.error("Error during face scan process:", error); 
+        if (scanStatusEl) scanStatusEl.textContent = `Error: ${error.message}`; 
+        stopFaceScan(); // ហៅ stopFaceScan ពេលមានបញ្ហា
+        setTimeout(() => { 
+            if (faceScanModal) faceScanModal.classList.add('hidden'); 
+            showCustomAlert("បញ្ហាស្កេនមុខ", `មានបញ្ហា៖\n${error.message}\nសូមប្រាកដថាអ្នកបានអនុញ្ញាតឲ្យប្រើកាមេរ៉ា។`); 
+        }, 1500); 
+    } 
+}
+
+/**
+ * មុខងារថ្មីសម្រាប់ stopFaceScan (ប្រើ rAF)
+ */
+function stopFaceScan() { 
+    stopAdvancedFaceAnalysis(); // បញ្ឈប់ Loop rAF
+    if (video && video.srcObject) { 
+        video.srcObject.getTracks().forEach(track => track.stop()); 
+        video.srcObject = null; 
+    } 
+}
+
+// ========== START: CRITICAL FIX 2 ==========
+if (scanFaceBtn) scanFaceBtn.addEventListener('click', startFaceScan);
+if (cancelScanBtn) cancelScanBtn.addEventListener('click', () => { 
+    stopFaceScan(); 
+    
+    // --- CRITICAL FIX ---
+    // លុប "កូនសោគោល" ចោល នៅពេលបោះបង់
+    userReferenceDescriptor = null;
+    console.log("Reference Descriptor Cleared on Cancel.");
+    // --- END CRITICAL FIX ---
+
+    if (faceScanModal) faceScanModal.classList.add('hidden'); 
+});
+// ========== END: CRITICAL FIX 2 ==========
+
+// ========== END: MODIFIED scan/stop functions ==========
 
 
     // --- App Navigation & State Logic ---
     function loginUser(userIdToLogin) { const user = allUsersData.find(u => u.id === userIdToLogin); if (!user) { showCustomAlert("Login Error", "មានបញ្ហា Login: រកមិនឃើញទិន្នន័យអ្នកប្រើប្រាស់"); return; } if (rememberMeCheckbox && rememberMeCheckbox.checked) { localStorage.setItem('leaveAppUser', JSON.stringify(user)); } else { localStorage.removeItem('leaveAppUser'); } showLoggedInState(user); }
-    function logout() { currentUser = null; clearReferenceDescriptor(); localStorage.removeItem('leaveAppUser'); if (loginPage) loginPage.classList.remove('hidden'); if (mainAppContainer) mainAppContainer.classList.add('hidden'); if (userPhotoEl) userPhotoEl.src = 'https://placehold.co/100x100/e2e8f0/64748b?text=User'; if (userNameEl) userNameEl.textContent = '...'; if (userIdEl) userIdEl.textContent = '...'; if (userSearchInput) userSearchInput.value = ''; selectedUserId = null; if (scanFaceBtn) scanFaceBtn.disabled = true; if (historyUnsubscribe) historyUnsubscribe(); if (outHistoryUnsubscribe) outHistoryUnsubscribe(); historyUnsubscribe = null; outHistoryUnsubscribe = null; signInAnonymously(auth).catch(err => console.error("Error signing in anonymously after logout:", err)); }
-    function showLoggedInState(user) { currentUser = user; clearReferenceDescriptor(); populateAccountPage(user); if (homeUserName) homeUserName.textContent = user.name || '...'; if (loginPage) loginPage.classList.add('hidden'); if (mainAppContainer) mainAppContainer.classList.remove('hidden'); if (criticalErrorDisplay) criticalErrorDisplay.classList.add('hidden'); navigateTo('page-home'); setupHistoryListeners(user.id); }
+    function logout() { currentUser = null; userReferenceDescriptor = null; localStorage.removeItem('leaveAppUser'); if (loginPage) loginPage.classList.remove('hidden'); if (mainAppContainer) mainAppContainer.classList.add('hidden'); if (userPhotoEl) userPhotoEl.src = 'https://placehold.co/100x100/e2e8f0/64748b?text=User'; if (userNameEl) userNameEl.textContent = '...'; if (userIdEl) userIdEl.textContent = '...'; if (userSearchInput) userSearchInput.value = ''; selectedUserId = null; if (scanFaceBtn) scanFaceBtn.disabled = true; if (historyUnsubscribe) historyUnsubscribe(); if (outHistoryUnsubscribe) outHistoryUnsubscribe(); historyUnsubscribe = null; outHistoryUnsubscribe = null; signInAnonymously(auth).catch(err => console.error("Error signing in anonymously after logout:", err)); }
+    function showLoggedInState(user) { currentUser = user; userReferenceDescriptor = null; populateAccountPage(user); if (homeUserName) homeUserName.textContent = user.name || '...'; if (loginPage) loginPage.classList.add('hidden'); if (mainAppContainer) mainAppContainer.classList.remove('hidden'); if (criticalErrorDisplay) criticalErrorDisplay.classList.add('hidden'); navigateTo('page-home'); setupHistoryListeners(user.id); }
     function populateAccountPage(user) { if (!user) return; if (userPhotoEl && user.photo) { const img = new Image(); img.crossOrigin = "anonymous"; img.src = user.photo; img.onload = () => userPhotoEl.src = img.src; img.onerror = () => userPhotoEl.src = 'https://placehold.co/100x100/e2e8f0/64748b?text=គ្មានរូប'; } else if (userPhotoEl) { userPhotoEl.src = 'https://placehold.co/100x100/e2e8f0/64748b?text=User'; } if (userNameEl) userNameEl.textContent = user.name || 'មិនមាន'; if (userIdEl) userIdEl.textContent = user.id || 'មិនមាន'; if (userGenderEl) userGenderEl.textContent = user.gender || 'មិនមាន'; if (userGroupEl) userGroupEl.textContent = user.group || 'មិនមាន'; if (userDepartmentEl) userDepartmentEl.textContent = user.department || 'មិនមាន'; }
     if (logoutBtn) logoutBtn.addEventListener('click', logout);
     function navigateTo(pageId) { console.log("Navigating to page:", pageId); pages.forEach(page => { const pageEl = document.getElementById(page); if (pageEl) pageEl.classList.add('hidden'); }); const targetPage = document.getElementById(pageId); if (targetPage) targetPage.classList.remove('hidden'); 
@@ -358,8 +552,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- RETURN CONFIRMATION LOGIC ---
     function isPointInPolygon(point, polygon) { const [lat, lng] = point; let isInside = false; for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) { const [lat_i, lng_i] = polygon[i]; const [lat_j, lng_j] = polygon[j]; const intersect = ((lng_i > lng) !== (lng_j > lng)) && (lat < (lat_j - lat_i) * (lng - lng_i) / (lng_j - lng_i) + lat_i); if (intersect) isInside = !isInside; } return isInside; }
 
+    /**
+     * មុខងារថ្មីសម្រាប់ stopReturnScan (ប្រើ rAF)
+     */
     function stopReturnScan(clearId = true) { 
-        stopAdvancedFaceAnalysis(); // ហៅ "ខួរក្បាល" ឲ្យបញ្ឈប់ Loop
+        stopAdvancedFaceAnalysis(); // បញ្ឈប់ Loop rAF
         if (returnVideo && returnVideo.srcObject) { 
             returnVideo.srcObject.getTracks().forEach(track => track.stop()); 
             returnVideo.srcObject = null; 
@@ -380,12 +577,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         try { 
             if (returnScanStatusEl) returnScanStatusEl.textContent = 'កំពុងវិភាគរូបថតយោង...'; 
-            // ហៅ "ខួរក្បាល" ឲ្យបង្កើត "កូនសោគោល"
             const referenceDescriptor = await getReferenceDescriptor(currentUser.photo); 
-            
             if (returnScanStatusEl) returnScanStatusEl.textContent = 'កំពុងស្នើសុំបើកកាមេរ៉ា...'; 
             const stream = await navigator.mediaDevices.getUserMedia({ video: {} }); 
 
+            // --- START: MODIFIED BLOCK (rAF) ---
             if (returnVideo) returnVideo.srcObject = stream; 
             if (returnScanStatusEl) returnScanStatusEl.textContent = 'សូមដាក់មុខរបស់អ្នកឲ្យចំកាមេរ៉ា'; 
 
@@ -394,27 +590,29 @@ document.addEventListener('DOMContentLoaded', async () => {
             // កំណត់អ្វីដែលត្រូវធ្វើនៅពេលជោគជ័យ
             const onSuccess = () => {
                 console.log("Return Scan Success!");
+                // Loop ឈប់ដោយខ្លួនឯង តែយើងត្រូវបិទវីដេអូ
                 if (returnVideo && returnVideo.srcObject) { 
                     returnVideo.srcObject.getTracks().forEach(track => track.stop()); 
                     returnVideo.srcObject = null; 
                 }
+                // បន្តទៅពិនិត្យទីតាំង
                 handleReturnFaceScanSuccess(); 
             };
 
-            // ហៅ "ខួរក្បាល" ឲ្យចាប់ផ្តើមវិភាគ
+            // ហៅ Function វិភាគថ្មី
             startAdvancedFaceAnalysis(
                 returnVideo, 
                 returnScanStatusEl, 
                 returnScanDebugEl, 
-                'face-guide-overlay-return', // បញ្ជូន ID របស់ Oval Guide ថ្មី
                 referenceDescriptor, 
                 onSuccess
             );
+            // --- END: MODIFIED BLOCK (rAF) ---
 
         } catch (error) { 
             console.error("Error during return scan process:", error); 
             if (returnScanStatusEl) returnScanStatusEl.textContent = `Error: ${error.message}`; 
-            stopReturnScan(true); 
+            stopReturnScan(true); // ហៅ stopReturnScan ពេលមានបញ្ហា
             setTimeout(() => { 
                 if (returnScanModal) returnScanModal.classList.add('hidden'); 
                 showCustomAlert("បញ្ហាស្កេនមុខ", `មានបញ្ហា៖\n${error.message}\nសូមប្រាកដថាអ្នកបានអនុញ្ញាតឲ្យប្រើកាមេរ៉ា។`); 
@@ -423,7 +621,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (cancelReturnScanBtn) cancelReturnScanBtn.addEventListener('click', () => { 
-        stopReturnScan(true); 
+        stopReturnScan(true); // ហៅ stopReturnScan (ដែលរួមបញ្ចូលការ stop rAF)
         if (returnScanModal) returnScanModal.classList.add('hidden'); 
     });
     
