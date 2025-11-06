@@ -54,7 +54,7 @@ function formatFirestoreTimestamp(timestamp, format = 'HH:mm dd/MM/yyyy') { let 
 function parseReturnedAt_(returnedAtString) { if (!returnedAtString || typeof returnedAtString !== 'string') return { date: "", time: "" }; const parts = returnedAtString.split(' '); if (parts.length === 2) return { time: parts[0], date: parts[1] }; return { date: returnedAtString, time: "" }; }
 function formatDateToDdMmmYyyy(dateString) {
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  <b></b> let date;
+  let date;
     if (dateString.includes('/') && dateString.split('/').length === 3) { // dd/mm/yyyy
         const parts = dateString.split('/');
         date = new Date(parts[2], parts[1] - 1, parts[0]); // year, month (0-indexed), day
